@@ -1,7 +1,7 @@
 # MultiPoolMiner (With MiningPoolHubStats Support)
 ###### created by jimok82 (based on MultiPoolMiner created by aaronsace) 
 
-## Important note for those already using MPM who want the reporting feature for https://miningpooolhubstats.com
+## Important note for those already using MPM who want the reporting feature for https://miningpoolhubstats.com
 
 If you are already running this version of MultiPoolMiner and simply want to swap in the files that do the reporting, you simply need to copy the following files from this release:
 
