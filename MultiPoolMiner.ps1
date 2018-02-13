@@ -574,7 +574,7 @@ while ($true) {
 
     #POST data to stats
     if($Config.MPHApiKey) {
-        .\ReportStatus.ps1 -WorkerName $WorkerNameBackup -ActiveMiners $ActiveMiners -Miners $Miners -MPHApiKey $Config.MPHApiKey
+        .\ReportStatus.ps1 -WorkerName $WorkerName -Version $Version -ActiveMiners $ActiveMiners -Miners $Miners -MPHApiKey $Config.MPHApiKey
     }
 
     #Display mining information

@@ -2,6 +2,7 @@
 
 param(
     [Parameter(Mandatory=$true)][String]$WorkerName,
+    [Parameter(Mandatory=$true)][String]$Version,
     [Parameter(Mandatory=$true)]$ActiveMiners,
     [Parameter(Mandatory=$true)]$Miners,
     [Parameter(Mandatory=$true)]$MPHApiKey
@@ -17,6 +18,7 @@ $MatchingMiner = $Miners | Where-Object {$_.Name -eq $ActiveMiner.Name -and $_.P
 # Create a custom object to convert to json. Type, Pool, CurrentSpeed and EstimatedSpeed are all forced to be arrays, since they sometimes have multiple values.
     [pscustomobject]@{
         Name           = $_.Name
+        Version        = $Version
         Path           = Resolve-Path -Relative $_.Path
         Type           = @($_.Type)
         Active         = "{0:dd} Days {0:hh} Hours {0:mm} Minutes" -f $_.GetActiveTime()
