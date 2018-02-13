@@ -1,5 +1,13 @@
 ﻿using module ..\Include.psm1
 
+param(
+    [alias("Wallet")]
+    [String]$BTC, 
+    [alias("WorkerName")]
+    [String]$Worker, 
+    [TimeSpan]$StatSpan
+)
+
 $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
 $AHashPool_Request = [PSCustomObject]@{}
@@ -8,18 +16,19 @@ try {
     $AHashPool_Request = Invoke-RestMethod "http://www.ahashpool.com/api/status" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
 }
 catch {
-    Write-Warning "Pool API ($Name) has failed. "
+    Write-Log -Level Warn "Pool API ($Name) has failed. "
     return
 }
 
 if (($AHashPool_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Measure-Object Name).Count -le 1) {
-    Write-Warning "Pool API ($Name) returned nothing. "
+    Write-Log -Level Warn "Pool API ($Name) returned nothing. "
     return
 }
 
 $AHashPool_Regions = "us"
+$AHashPool_Currencies = @("BTC")
 
-$AHashPool_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Select-Object -ExpandProperty Name | ForEach-Object {
+$AHashPool_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Select-Object -ExpandProperty Name | Where-Object {$AHashPool_Request.$_.hashrate -gt 0} | ForEach-Object {
     $AHashPool_Host = "mine.ahashpool.com"
     $AHashPool_Port = $AHashPool_Request.$_.port
     $AHashPool_Algorithm = $AHashPool_Request.$_.name
@@ -42,7 +51,7 @@ $AHashPool_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | S
         $AHashPool_Region = $_
         $AHashPool_Region_Norm = Get-Region $AHashPool_Region
 
-        if ($Wallet) {
+        $AHashPool_Currencies | ForEach-Object {
             [PSCustomObject]@{
                 Algorithm     = $AHashPool_Algorithm_Norm
                 Info          = $AHashPool_Coin
@@ -52,8 +61,8 @@ $AHashPool_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | S
                 Protocol      = "stratum+tcp"
                 Host          = "$AHashPool_Algorithm.$AHashPool_Host"
                 Port          = $AHashPool_Port
-                User          = $Wallet
-                Pass          = "$WorkerName,c=BTC"
+                User          = Get-Variable $_ -ValueOnly
+                Pass          = "$Worker,c=$_"
                 Region        = $AHashPool_Region_Norm
                 SSL           = $false
                 Updated       = $Stat.Updated

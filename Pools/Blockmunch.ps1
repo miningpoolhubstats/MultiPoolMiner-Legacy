@@ -1,26 +1,36 @@
 ﻿using module ..\Include.psm1
 
+param(
+    [alias("Wallet")]
+    [String]$BTC, 
+    [alias("WorkerName")]
+    [String]$Worker, 
+    [TimeSpan]$StatSpan
+)
+
 $Name = Get-Item $MyInvocation.MyCommand.Path | Select-Object -ExpandProperty BaseName
 
 $Blockmunch_Request = [PSCustomObject]@{}
 
 try {
     $Blockmunch_Request = Invoke-RestMethod "http://www.blockmunch.club/api/status" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
+    $BlockmunchCoins_Request = Invoke-RestMethod "http://www.blockmunch.club/api/currencies" -UseBasicParsing -TimeoutSec 10 -ErrorAction Stop
 }
 catch {
-    Write-Warning "Pool API ($Name) has failed. "
+    Write-Log -Level Warn "Pool API ($Name) has failed. "
     return
 }
 
 if (($Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Measure-Object Name).Count -le 1) {
-    Write-Warning "Pool API ($Name) returned nothing. "
+    Write-Log -Level Warn "Pool API ($Name) returned nothing. "
     return
 }
 
 $Blockmunch_Regions = "us"
+$Blockmunch_Currencies = @("BTC") + ($BlockmunchCoins_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Select-Object -ExpandProperty Name) | Select-Object -Unique | Where-Object {Get-Variable $_ -ValueOnly -ErrorAction SilentlyContinue}
 
-$Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Select-Object -ExpandProperty Name | ForEach-Object {
-    $Blockmunch_Host = "mine.blockmunch.club"
+$Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | Select-Object -ExpandProperty Name | Where-Object {$Blockmunch_Request.$_.hashrate -gt 0} | ForEach-Object {
+    $Blockmunch_Host = "blockmunch.club"
     $Blockmunch_Port = $Blockmunch_Request.$_.port
     $Blockmunch_Algorithm = $Blockmunch_Request.$_.name
     $Blockmunch_Algorithm_Norm = Get-Algorithm $Blockmunch_Algorithm
@@ -47,7 +57,7 @@ $Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | 
         $Blockmunch_Region = $_
         $Blockmunch_Region_Norm = Get-Region $Blockmunch_Region
 
-        if ($Wallet) {
+        $Blockmunch_Currencies | ForEach-Object {
             [PSCustomObject]@{
                 Algorithm     = $Blockmunch_Algorithm_Norm
                 Info          = $Blockmunch_Coin
@@ -55,10 +65,10 @@ $Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | 
                 StablePrice   = $Stat.Week
                 MarginOfError = $Stat.Week_Fluctuation
                 Protocol      = "stratum+tcp"
-                Host          = "$Blockmunch_Algorithm.$Blockmunch_Host"
+                Host          = $Blockmunch_Host
                 Port          = $Blockmunch_Port
-                User          = $Wallet
-                Pass          = "$WorkerName,c=BTC"
+                User          = Get-Variable $_ -ValueOnly
+                Pass          = "$Worker,c=$_"
                 Region        = $Blockmunch_Region_Norm
                 SSL           = $false
                 Updated       = $Stat.Updated
@@ -66,3 +76,4 @@ $Blockmunch_Request | Get-Member -MemberType NoteProperty -ErrorAction Ignore | 
         }
     }
 }
+Sleep 0

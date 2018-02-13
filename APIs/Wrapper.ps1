@@ -2,15 +2,34 @@
 
 class Wrapper : Miner {
     StartMining() {
+        $this.Status = [MinerStatus]::Failed
+
         $this.New = $true
         $this.Activated++
-        if ($this.Process -ne $null) {$this.Active += $this.Process.ExitTime - $this.Process.StartTime}
-        $this.Process = Start-Process -FilePath (@{desktop = "powershell"; core = "pwsh"}.$Global:PSEdition) -ArgumentList "-executionpolicy bypass -command . '$(Convert-Path ".\Wrapper.ps1")' -ControllerProcessID $Global:PID -Id '$($this.Port)' -FilePath '$($this.Path)' -ArgumentList '$($this.Arguments)' -WorkingDirectory '$(Split-Path $this.Path)'" -PassThru
-        if ($this.Process -eq $null) {$this.Status = "Failed"}
-        else {$this.Status = "Running"}
+
+        if ($this.Process) {
+            if ($this.Process | Get-Job -ErrorAction SilentlyContinue) {
+                $this.Process | Remove-Job -Force
+            }
+
+            if (-not ($this.Process | Get-Job -ErrorAction SilentlyContinue)) {
+                $this.Active += $this.Process.PSEndTime - $this.Process.PSBeginTime
+                $this.Process = $null
+            }
+        }
+
+        if (-not $this.Process) {
+            $this.Process = Start-SubProcess -FilePath (@{desktop = "powershell"; core = "pwsh"}.$Global:PSEdition) -ArgumentList "-executionpolicy bypass -command . '$(Convert-Path ".\Wrapper.ps1")' -ControllerProcessID $Global:PID -Id '$($this.Port)' -FilePath '$($this.Path)' -ArgumentList '$($this.Arguments)' -WorkingDirectory '$(Split-Path $this.Path)'" -LogPath ([System.IO.Path]::GetFullPath(".\Logs\$($this.Name)-$($this.Port)_$(Get-Date -Format "yyyy-MM-dd_HH-mm-ss")")) -WorkingDirectory (Split-Path $this.Path) -Priority ($this.Type | ForEach-Object {if ($this -eq "CPU") {-2}else {-1}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum)
+
+            if ($this.Process | Get-Job -ErrorAction SilentlyContinue) {
+                $this.Status = [MinerStatus]::Running
+            }
+        }
     }
 
-    [PSCustomObject]GetHashRate ([String[]]$Algorithm, [Bool]$Safe = $false) {
+    [PSCustomObject]GetMinerData ([Bool]$Safe = $false) {
+        $MinerData = ([Miner]$this).GetMinerData($Safe)
+
         $Server = "localhost"
         $Timeout = 10 #seconds
 
@@ -35,16 +54,16 @@ class Wrapper : Miner {
                 }
             }
             catch {
-                Write-Warning "Failed to connect to miner ($($this.Name)). "
+                Write-Log -Level Error "Failed to connect to miner ($($this.Name)). "
                 break
             }
 
-            $HashRate_Name = [String]$Algorithm[0]
+            $HashRate_Name = [String]$this.Algorithm[0]
             $HashRate_Value = [Double]$Data
 
             $HashRate | Where-Object {$HashRate_Name} | Add-Member @{$HashRate_Name = [Int64]$HashRate_Value}
 
-            $Algorithm | Where-Object {-not $HashRate.$_} | ForEach-Object {break}
+            $this.Algorithm | Where-Object {-not $HashRate.$_} | ForEach-Object {break}
 
             if (-not $Safe) {break}
 
@@ -52,9 +71,10 @@ class Wrapper : Miner {
         } while ($HashRates.Count -lt 6)
 
         $HashRate = [PSCustomObject]@{}
-        $Algorithm | ForEach-Object {$HashRate | Add-Member @{$_ = [Int64]($HashRates.$_ | Measure-Object -Maximum -Minimum -Average | Where-Object {$_.Maximum - $_.Minimum -le $_.Average * $Delta}).Maximum}}
-        $Algorithm | Where-Object {-not $HashRate.$_} | Select-Object -First 1 | ForEach-Object {$Algorithm | ForEach-Object {$HashRate.$_ = [Int64]0}}
+        $this.Algorithm | ForEach-Object {$HashRate | Add-Member @{$_ = [Int64]($HashRates.$_ | Measure-Object -Maximum -Minimum -Average | Where-Object {$_.Maximum - $_.Minimum -le $_.Average * $Delta}).Maximum}}
+        $this.Algorithm | Where-Object {-not $HashRate.$_} | Select-Object -First 1 | ForEach-Object {$this.Algorithm | ForEach-Object {$HashRate.$_ = [Int64]0}}
 
-        return $HashRate
+        $MinerData | Add-Member HashRate $HashRate -Force
+        return $MinerData
     }
 }

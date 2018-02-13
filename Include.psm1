@@ -5,6 +5,47 @@ Set-Location (Split-Path $MyInvocation.MyCommand.Path)
 
 Add-Type -Path .\OpenCL\*.cs
 
+Function Write-Log {
+    [CmdletBinding()]
+    Param(
+        [Parameter(Mandatory = $true, ValueFromPipelineByPropertyName = $true)][ValidateNotNullOrEmpty()][Alias("LogContent")][string]$Message,
+        [Parameter(Mandatory = $false)][ValidateSet("Error", "Warn", "Info", "Verbose", "Debug")][string]$Level = "Info"
+    )
+
+    Begin { }
+    Process {
+        $filename = ".\Logs\MultiPoolMiner_$(Get-Date -Format "yyyy-MM-dd").txt"
+        $date = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+
+        if (-not (Test-Path "Stats")) {New-Item "Stats" -ItemType "directory" | Out-Null}
+
+        switch ($Level) {
+            'Error' {
+                $LevelText = 'ERROR:'
+                Write-Error -Message $Message
+            }
+            'Warn' {
+                $LevelText = 'WARNING:'
+                Write-Warning -Message $Message
+            }
+            'Info' {
+                $LevelText = 'INFO:'
+                Write-Information -MessageData $Message
+            }
+            'Verbose' {
+                $LevelText = 'VERBOSE:'
+                Write-Verbose -Message $Message
+            }
+            'Debug' {
+                $LevelText = 'DEBUG:'
+                Write-Debug -Message $Message
+            }
+        }
+        "$date $LevelText $Message" | Out-File -FilePath $filename -Append
+    }
+    End {}
+}
+
 function Set-Stat {
     [CmdletBinding()]
     param(
@@ -56,10 +97,10 @@ function Set-Stat {
             $ToleranceMax = $Stat.Week * (1 + [Math]::Min([Math]::Max($Stat.Week_Fluctuation * 2, 0.1), 0.9))
         }
 
-        if ($ChangeDetection -and $Value -eq $Stat.Live) {$Updated -eq $Stat.updated}
+        if ($ChangeDetection -and $Value -eq $Stat.Live) {$Updated = $Stat.updated}
 
         if ($Value -lt $ToleranceMin -or $Value -gt $ToleranceMax) {
-            Write-Warning "Stat file ($Name) was not updated because the value ($([Decimal]$Value)) is outside fault tolerance ($([Int]$ToleranceMin) ... $([Int]$ToleranceMax)). "
+            Write-Log -Level Warn "Stat file ($Name) was not updated because the value ($([Decimal]$Value)) is outside fault tolerance ($([Int]$ToleranceMin) to $([Int]$ToleranceMax)). "
         }
         else {
             $Span_Minute = [Math]::Min($Duration.TotalMinutes / [Math]::Min($Stat.Duration.TotalMinutes, 1), 1)
@@ -90,29 +131,29 @@ function Set-Stat {
                 Week_Fluctuation = ((1 - $Span_Week) * $Stat.Week_Fluctuation) + 
                 ($Span_Week * ([Math]::Abs($Value - $Stat.Week) / [Math]::Max([Math]::Abs($Stat.Week), $SmallestValue)))
                 Duration = $Stat.Duration + $Duration
-                Updated = (Get-Date).ToUniversalTime()
+                Updated = $Updated
             }
         }
     }
     catch {
-        if (Test-Path $Path) {Write-Warning "Stat file ($Name) is corrupt and will be reset. "}
+        if (Test-Path $Path) {Write-Log -Level Warn "Stat file ($Name) is corrupt and will be reset. "}
 
         $Stat = [PSCustomObject]@{
             Live = $Value
             Minute = $Value
-            Minute_Fluctuation = 1
+            Minute_Fluctuation = 0
             Minute_5 = $Value
-            Minute_5_Fluctuation = 1
+            Minute_5_Fluctuation = 0
             Minute_10 = $Value
-            Minute_10_Fluctuation = 1
+            Minute_10_Fluctuation = 0
             Hour = $Value
-            Hour_Fluctuation = 1
+            Hour_Fluctuation = 0
             Day = $Value
-            Day_Fluctuation = 1
+            Day_Fluctuation = 0
             Week = $Value
-            Week_Fluctuation = 1
+            Week_Fluctuation = 0
             Duration = $Duration
-            Updated = (Get-Date).ToUniversalTime()
+            Updated = $Updated
         }
     }
 
@@ -158,38 +199,35 @@ function Get-ChildItemContent {
         [Hashtable]$Parameters = @{}
     )
 
+    function Invoke-ExpressionRecursive ($Expression) {
+        if ($Expression -is [String]) {
+            if ($Expression -match '(\$|")') {
+                try {$Expression = Invoke-Expression $Expression}
+                catch {$Expression = Invoke-Expression "`"$Expression`""}
+            }
+        }
+        elseif ($Expression -is [PSCustomObject]) {
+            $Expression | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name | ForEach-Object {
+                $Expression.$_ = Invoke-ExpressionRecursive $Expression.$_
+            }
+        }
+        return $Expression
+    }
+
     Get-ChildItem $Path | ForEach-Object {
         $Name = $_.BaseName
         $Content = @()
         if ($_.Extension -eq ".ps1") {
             $Content = & {
-                $Parameters.Keys | ForEach-Object {Set-Variable $_ $Parameters[$_]}
+                $Parameters.Keys | ForEach-Object {Set-Variable $_ $Parameters.$_}
                 & $_.FullName @Parameters
             }
         }
         else {
             $Content = & {
-                $Parameters.Keys | ForEach-Object {Set-Variable $_ $Parameters[$_]}
+                $Parameters.Keys | ForEach-Object {Set-Variable $_ $Parameters.$_}
                 try {
-                    ($_ | Get-Content | ConvertFrom-Json) | ForEach-Object {
-                        $Item = $_
-                        $ItemKeys = $Item.PSObject.Properties.Name.Clone()
-                        $ItemKeys | ForEach-Object {
-                            if ($Item.$_ -is [String]) {
-                                $Item.$_ = Invoke-Expression "`"$($Item.$_)`""
-                            }
-                            elseif ($Item.$_ -is [PSCustomObject]) {
-                                $Property = $Item.$_
-                                $PropertyKeys = $Property.PSObject.Properties.Name
-                                $PropertyKeys | ForEach-Object {
-                                    if ($Property.$_ -is [String]) {
-                                        $Property.$_ = Invoke-Expression "`"$($Property.$_)`""
-                                    }
-                                }
-                            }
-                        }
-                        $Item
-                    }
+                    ($_ | Get-Content | ConvertFrom-Json) | ForEach-Object {Invoke-ExpressionRecursive $_}
                 }
                 catch [ArgumentException] {
                     $null
@@ -214,6 +252,36 @@ filter ConvertTo-Hash {
         3 {"{0:n2} GH" -f ($Hash / [Math]::Pow(1000, 3))}
         4 {"{0:n2} TH" -f ($Hash / [Math]::Pow(1000, 4))}
         Default {"{0:n2} PH" -f ($Hash / [Math]::Pow(1000, 5))}
+    }
+}
+
+function ConvertTo-LocalCurrency { 
+    [CmdletBinding()]
+    # To get same numbering scheme reagardless of value BTC value (size) to dermine formatting
+    # Use $Offset to add/remove decimal places
+
+    param(
+        [Parameter(Mandatory = $true)]
+        [Double]$Number, 
+        [Parameter(Mandatory = $true)]
+        [Double]$BTCRate,
+        [Parameter(Mandatory = $false)]
+        [Int]$Offset        
+    )
+
+    $Number = $Number * $BTCRate
+
+    switch ([math]::truncate(10 - $Offset - [math]::log($BTCRate, [Math]::Pow(10, 1)))) {
+        0 {$Number.ToString("N0")}
+        1 {$Number.ToString("N1")}
+        2 {$Number.ToString("N2")}
+        3 {$Number.ToString("N3")}
+        4 {$Number.ToString("N4")}
+        5 {$Number.ToString("N5")}
+        6 {$Number.ToString("N6")}
+        7 {$Number.ToString("N7")}
+        8 {$Number.ToString("N8")}
+        Default {$Number.ToString("N9")}
     }
 }
 
@@ -258,48 +326,22 @@ function Start-SubProcess {
         [Parameter(Mandatory = $false)]
         [String]$ArgumentList = "", 
         [Parameter(Mandatory = $false)]
+        [String]$LogPath = "", 
+        [Parameter(Mandatory = $false)]
         [String]$WorkingDirectory = "", 
         [ValidateRange(-2, 3)]
         [Parameter(Mandatory = $false)]
         [Int]$Priority = 0
     )
 
-    $PriorityNames = [PSCustomObject]@{-2 = "Idle"; -1 = "BelowNormal"; 0 = "Normal"; 1 = "AboveNormal"; 2 = "High"; 3 = "RealTime"}
+    $ScriptBlock = "Set-Location '$WorkingDirectory'; (Get-Process -Id `$PID).PriorityClass = '$(@{-2 = "Idle"; -1 = "BelowNormal"; 0 = "Normal"; 1 = "AboveNormal"; 2 = "High"; 3 = "RealTime"}[$Priority])'; "
+    $ScriptBlock += "& '$FilePath'"
+    if ($ArgumentList) {$ScriptBlock += " $ArgumentList"}
+    $ScriptBlock += " *>&1"
+    $ScriptBlock += " | Write-Output"
+    if ($LogPath) {$ScriptBlock += " | Tee-Object '$LogPath'"}
 
-    $Job = Start-Job -ArgumentList $PID, $FilePath, $ArgumentList, $WorkingDirectory {
-        param($ControllerProcessID, $FilePath, $ArgumentList, $WorkingDirectory)
-
-        $ControllerProcess = Get-Process -Id $ControllerProcessID
-        if ($ControllerProcess -eq $null) {return}
-
-        $ProcessParam = @{}
-        $ProcessParam.Add("FilePath", $FilePath)
-        $ProcessParam.Add("WindowStyle", 'Minimized')
-        if ($ArgumentList -ne "") {$ProcessParam.Add("ArgumentList", $ArgumentList)}
-        if ($WorkingDirectory -ne "") {$ProcessParam.Add("WorkingDirectory", $WorkingDirectory)}
-        $Process = Start-Process @ProcessParam -PassThru
-        if ($Process -eq $null) {
-            [PSCustomObject]@{ProcessId = $null}
-            return        
-        }
-
-        [PSCustomObject]@{ProcessId = $Process.Id; ProcessHandle = $Process.Handle}
-
-        $ControllerProcess.Handle | Out-Null
-        $Process.Handle | Out-Null
-
-        do {if ($ControllerProcess.WaitForExit(1000)) {$Process.CloseMainWindow() | Out-Null}}
-        while ($Process.HasExited -eq $false)
-    }
-
-    do {Start-Sleep 1; $JobOutput = Receive-Job $Job}
-    while ($JobOutput -eq $null)
-
-    $Process = Get-Process | Where-Object Id -EQ $JobOutput.ProcessId
-    $Process.Handle | Out-Null
-    $Process
-
-    if ($Process) {$Process.PriorityClass = $PriorityNames.$Priority}
+    Start-Job ([ScriptBlock]::Create($ScriptBlock))
 }
 
 function Expand-WebRequest {
@@ -404,6 +446,12 @@ function Get-Region {
     else {$Region}
 }
 
+enum MinerStatus {
+    Running
+    Idle
+    Failed
+}
+
 class Miner {
     $Name
     $Path
@@ -411,7 +459,7 @@ class Miner {
     $Wrap
     $API
     $Port
-    $Algorithm
+    [Array]$Algorithm = @()
     $Type
     $Index
     $Device
@@ -424,24 +472,122 @@ class Miner {
     $Speed_Live
     $Best
     $Best_Comparison
-    $Process
+    hidden [System.Management.Automation.Job]$Process = $null
     $New
-    $Active
-    $Activated
-    $Status
+    hidden [TimeSpan]$Active = [TimeSpan]::Zero
+    hidden [Int]$Activated = 0
+    hidden [MinerStatus]$Status = [MinerStatus]::Idle
     $Benchmarked
 
-    StartMining() {
+    hidden StartMining() {
+        $this.Status = [MinerStatus]::Failed
+
         $this.New = $true
         $this.Activated++
-        if ($this.Process -ne $null) {$this.Active += $this.Process.ExitTime - $this.Process.StartTime}
-        $this.Process = Start-SubProcess -FilePath $this.Path -ArgumentList $this.Arguments -WorkingDirectory (Split-Path $this.Path) -Priority ($this.Type | ForEach-Object {if ($this -eq "CPU") {-2}else {-1}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum)
-        if ($this.Process -eq $null) {$this.Status = "Failed"}
-        else {$this.Status = "Running"}
+
+        if ($this.Process) {
+            if ($this.Process | Get-Job -ErrorAction SilentlyContinue) {
+                $this.Process | Remove-Job -Force
+            }
+
+            if (-not ($this.Process | Get-Job -ErrorAction SilentlyContinue)) {
+                $this.Active += $this.Process.PSEndTime - $this.Process.PSBeginTime
+                $this.Process = $null
+            }
+        }
+
+        if (-not $this.Process) {
+            $this.Process = Start-SubProcess -FilePath $this.Path -ArgumentList $this.Arguments -LogPath $Global:ExecutionContext.SessionState.Path.GetUnresolvedProviderPathFromPSPath(".\Logs\$($this.Name)-$($this.Port)_$(Get-Date -Format "yyyy-MM-dd_HH-mm-ss").txt") -WorkingDirectory (Split-Path $this.Path) -Priority ($this.Type | ForEach-Object {if ($_ -eq "CPU") {-2}else {-1}} | Measure-Object -Maximum | Select-Object -ExpandProperty Maximum)
+
+            if ($this.Process | Get-Job -ErrorAction SilentlyContinue) {
+                $this.Status = [MinerStatus]::Running
+            }
+        }
     }
 
-    StopMining() {
-        $this.Process.CloseMainWindow() | Out-Null
-        $this.Status = "Idle"
+    hidden StopMining() {
+        $this.Status = [MinerStatus]::Failed
+
+        if ($this.Process) {
+            if ($this.Process | Get-Job -ErrorAction SilentlyContinue) {
+                $this.Process | Remove-Job -Force
+            }
+
+            if (-not ($this.Process | Get-Job -ErrorAction SilentlyContinue)) {
+                $this.Active += $this.Process.PSEndTime - $this.Process.PSBeginTime
+                $this.Process = $null
+                $this.Status = [MinerStatus]::Idle
+            }
+        }
+    }
+
+    [DateTime]GetActiveLast() {
+        if ($this.Process.PSBeginTime -and $this.Process.PSEndTime) {
+            return $this.Process.PSEndTime
+        }
+        elseif ($this.Process.PSBeginTime) {
+            return Get-Date
+        }
+        else {
+            return [DateTime]::MinValue
+        }
+    }
+
+    [TimeSpan]GetActiveTime() {
+        if ($this.Process.PSBeginTime -and $this.Process.PSEndTime) {
+            return $this.Active + ($this.Process.PSEndTime - $this.Process.PSBeginTime)
+        }
+        elseif ($this.Process.PSBeginTime) {
+            return $this.Active + ((Get-Date) - $this.Process.PSBeginTime)
+        }
+        else {
+            return $this.Active
+        }
+    }
+
+    [Int]GetActivateCount() {
+        return $this.Activated
+    }
+
+    [MinerStatus]GetStatus() {
+        if ($this.Process.State -eq "Running") {
+            return [MinerStatus]::Running
+        }
+        elseif ($this.Status -eq "Running") {
+            return [MinerStatus]::Failed
+        }
+        else {
+            return $this.Status
+        }
+    }
+
+    SetStatus([MinerStatus]$Status) {
+        if ($Status -eq $this.GetStatus()) {return}
+
+        switch ($Status) {
+            "Running" {
+                $this.StartMining()
+            }
+            "Idle" {
+                $this.StopMining()
+            }
+            Default {
+                $this.StopMining()
+                $this.Status -eq $Status
+            }
+        }
+    }
+
+    [PSCustomObject]GetMinerData ([Bool]$Safe = $false) {
+        $Lines = @()
+
+        $this.Process | Receive-Job | ForEach-Object {
+            $Line = $_ -replace "\x1B\[[0-?]*[ -/]*[@-~]", "" -replace "`n|`r", ""
+            if ($Line) {$Lines += $Line}
+        }
+
+        return [PSCustomObject]@{
+            Lines = $Lines
+        }
     }
 }
